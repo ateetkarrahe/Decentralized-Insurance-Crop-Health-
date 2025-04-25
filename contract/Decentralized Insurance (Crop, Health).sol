@@ -22,6 +22,8 @@ contract DecentralizedInsurance {
     event ClaimRejected(address indexed user);
     event PolicyCanceled(address indexed user);
     event FundsWithdrawn(address indexed admin, uint256 amount);
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event DonationReceived(address indexed donor, uint256 amount);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not contract owner");
@@ -102,5 +104,42 @@ contract DecentralizedInsurance {
         payable(owner).transfer(amount);
 
         emit FundsWithdrawn(owner, amount);
+    }
+
+    // ✅ View a user's policy details
+    function getPolicyDetails(address user) external view returns (
+        InsuranceType, uint256, uint256, ClaimStatus, bool
+    ) {
+        InsurancePolicy memory policy = policies[user];
+        return (
+            policy.policyType,
+            policy.premium,
+            policy.coverage,
+            policy.claimStatus,
+            policy.isActive
+        );
+    }
+
+    // ✅ Check if a user has an active policy
+    function hasActivePolicy(address user) external view returns (bool) {
+        return policies[user].isActive;
+    }
+
+    // ✅ Get the contract's current balance
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // ✅ Transfer contract ownership
+    function updateOwner(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Invalid address");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    // ✅ Allow donations to the contract fund
+    function donate() external payable {
+        require(msg.value > 0, "Donation must be more than 0");
+        emit DonationReceived(msg.sender, msg.value);
     }
 }
