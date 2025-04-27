@@ -11,10 +11,17 @@ contract DecentralizedInsurance {
         uint256 coverage;
         ClaimStatus claimStatus;
         bool isActive;
+        uint256 createdAt;
+        uint256 expiry;
     }
 
     mapping(address => InsurancePolicy) public policies;
+    mapping(address => bool) public blacklisted;
+
     address public owner;
+
+    uint256 public totalPoliciesIssued;
+    uint256 public totalClaimsFiled;
 
     event PolicyPurchased(address indexed user, InsuranceType policyType, uint256 premium, uint256 coverage);
     event ClaimFiled(address indexed user, InsuranceType policyType);
@@ -24,6 +31,10 @@ contract DecentralizedInsurance {
     event FundsWithdrawn(address indexed admin, uint256 amount);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
     event DonationReceived(address indexed donor, uint256 amount);
+    event UserBlacklisted(address indexed user);
+    event UserRemovedFromBlacklist(address indexed user);
+    event PolicyReset(address indexed user);
+    event PolicyExtended(address indexed user, uint256 newExpiry);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not contract owner");
@@ -38,16 +49,22 @@ contract DecentralizedInsurance {
     function purchasePolicy(InsuranceType _type) external payable {
         require(msg.value > 0, "Premium must be greater than 0");
         require(!policies[msg.sender].isActive, "Existing policy active");
+        require(!blacklisted[msg.sender], "User is blacklisted");
 
         uint256 coverage = msg.value * 5;
+        uint256 duration = 30 days;
 
         policies[msg.sender] = InsurancePolicy({
             policyType: _type,
             premium: msg.value,
             coverage: coverage,
             claimStatus: ClaimStatus.None,
-            isActive: true
+            isActive: true,
+            createdAt: block.timestamp,
+            expiry: block.timestamp + duration
         });
+
+        totalPoliciesIssued++;
 
         emit PolicyPurchased(msg.sender, _type, msg.value, coverage);
     }
@@ -57,8 +74,10 @@ contract DecentralizedInsurance {
         InsurancePolicy storage policy = policies[msg.sender];
         require(policy.isActive, "No active policy");
         require(policy.claimStatus == ClaimStatus.None, "Claim already filed");
+        require(block.timestamp <= policy.expiry, "Policy expired");
 
         policy.claimStatus = ClaimStatus.Filed;
+        totalClaimsFiled++;
 
         emit ClaimFiled(msg.sender, policy.policyType);
     }
@@ -106,9 +125,9 @@ contract DecentralizedInsurance {
         emit FundsWithdrawn(owner, amount);
     }
 
-    // ✅ View a user's policy details
+    // View a user's policy details
     function getPolicyDetails(address user) external view returns (
-        InsuranceType, uint256, uint256, ClaimStatus, bool
+        InsuranceType, uint256, uint256, ClaimStatus, bool, uint256, uint256
     ) {
         InsurancePolicy memory policy = policies[user];
         return (
@@ -116,30 +135,76 @@ contract DecentralizedInsurance {
             policy.premium,
             policy.coverage,
             policy.claimStatus,
-            policy.isActive
+            policy.isActive,
+            policy.createdAt,
+            policy.expiry
         );
     }
 
-    // ✅ Check if a user has an active policy
+    // Check if a user has an active policy
     function hasActivePolicy(address user) external view returns (bool) {
         return policies[user].isActive;
     }
 
-    // ✅ Get the contract's current balance
+    // Get the contract's current balance
     function getContractBalance() external view returns (uint256) {
         return address(this).balance;
     }
 
-    // ✅ Transfer contract ownership
+    // Transfer contract ownership
     function updateOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid address");
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
-    // ✅ Allow donations to the contract fund
+    // Allow donations to the contract fund
     function donate() external payable {
         require(msg.value > 0, "Donation must be more than 0");
         emit DonationReceived(msg.sender, msg.value);
     }
+
+    // Extend policy duration
+    function extendPolicy(uint256 extraDays) external payable {
+        InsurancePolicy storage policy = policies[msg.sender];
+        require(policy.isActive, "No active policy");
+
+        uint256 requiredAmount = (policy.premium * extraDays) / 30;
+        require(msg.value >= requiredAmount, "Insufficient payment for extension");
+
+        policy.expiry += extraDays * 1 days;
+
+        emit PolicyExtended(msg.sender, policy.expiry);
+    }
+
+    // Check if a user's policy is expired
+    function isPolicyExpired(address user) public view returns (bool) {
+        InsurancePolicy memory policy = policies[user];
+        return policy.isActive && block.timestamp > policy.expiry;
+    }
+
+    // Blacklist a user
+    function blacklistUser(address user) external onlyOwner {
+        blacklisted[user] = true;
+        emit UserBlacklisted(user);
+    }
+
+    // Remove a user from blacklist
+    function removeBlacklist(address user) external onlyOwner {
+        blacklisted[user] = false;
+        emit UserRemovedFromBlacklist(user);
+    }
+
+    // Reset a user's policy (admin only)
+    function resetPolicy(address user) external onlyOwner {
+        require(policies[user].isActive, "No active policy to reset");
+        delete policies[user];
+        emit PolicyReset(user);
+    }
+
+    // Get total stats
+    function getPlatformStats() external view returns (uint256 totalPolicies, uint256 totalClaims, uint256 contractBalance) {
+        return (totalPoliciesIssued, totalClaimsFiled, address(this).balance);
+    }
 }
+
