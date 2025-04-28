@@ -17,11 +17,15 @@ contract DecentralizedInsurance {
 
     mapping(address => InsurancePolicy) public policies;
     mapping(address => bool) public blacklisted;
+    mapping(address => uint256) public donations;
 
     address public owner;
+    bool public isPaused = false;
 
     uint256 public totalPoliciesIssued;
     uint256 public totalClaimsFiled;
+
+    address[] public users;
 
     event PolicyPurchased(address indexed user, InsuranceType policyType, uint256 premium, uint256 coverage);
     event ClaimFiled(address indexed user, InsuranceType policyType);
@@ -35,9 +39,16 @@ contract DecentralizedInsurance {
     event UserRemovedFromBlacklist(address indexed user);
     event PolicyReset(address indexed user);
     event PolicyExtended(address indexed user, uint256 newExpiry);
+    event ContractPaused();
+    event ContractUnpaused();
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not contract owner");
+        _;
+    }
+
+    modifier notPaused() {
+        require(!isPaused, "Contract is paused");
         _;
     }
 
@@ -45,14 +56,17 @@ contract DecentralizedInsurance {
         owner = msg.sender;
     }
 
-    // Purchase insurance policy
-    function purchasePolicy(InsuranceType _type) external payable {
+    function purchasePolicy(InsuranceType _type) external payable notPaused {
         require(msg.value > 0, "Premium must be greater than 0");
         require(!policies[msg.sender].isActive, "Existing policy active");
         require(!blacklisted[msg.sender], "User is blacklisted");
 
         uint256 coverage = msg.value * 5;
         uint256 duration = 30 days;
+
+        if (policies[msg.sender].createdAt == 0) {
+            users.push(msg.sender);
+        }
 
         policies[msg.sender] = InsurancePolicy({
             policyType: _type,
@@ -65,12 +79,10 @@ contract DecentralizedInsurance {
         });
 
         totalPoliciesIssued++;
-
         emit PolicyPurchased(msg.sender, _type, msg.value, coverage);
     }
 
-    // File an insurance claim
-    function fileClaim() external {
+    function fileClaim() external notPaused {
         InsurancePolicy storage policy = policies[msg.sender];
         require(policy.isActive, "No active policy");
         require(policy.claimStatus == ClaimStatus.None, "Claim already filed");
@@ -78,11 +90,9 @@ contract DecentralizedInsurance {
 
         policy.claimStatus = ClaimStatus.Filed;
         totalClaimsFiled++;
-
         emit ClaimFiled(msg.sender, policy.policyType);
     }
 
-    // Approve a claim and send payout
     function approveClaim(address user) external onlyOwner {
         InsurancePolicy storage policy = policies[user];
         require(policy.claimStatus == ClaimStatus.Filed, "Claim not filed");
@@ -94,18 +104,15 @@ contract DecentralizedInsurance {
         emit ClaimApproved(user, policy.coverage);
     }
 
-    // Reject a claim
     function rejectClaim(address user) external onlyOwner {
         InsurancePolicy storage policy = policies[user];
         require(policy.claimStatus == ClaimStatus.Filed, "Claim not filed");
 
         policy.claimStatus = ClaimStatus.Rejected;
-
         emit ClaimRejected(user);
     }
 
-    // Cancel a policy (user-initiated)
-    function cancelPolicy() external {
+    function cancelPolicy() external notPaused {
         InsurancePolicy storage policy = policies[msg.sender];
         require(policy.isActive, "No active policy");
         require(policy.claimStatus == ClaimStatus.None, "Claim already filed");
@@ -117,15 +124,12 @@ contract DecentralizedInsurance {
         emit PolicyCanceled(msg.sender);
     }
 
-    // Withdraw unallocated funds (only owner)
     function withdrawFunds(uint256 amount) external onlyOwner {
         require(amount <= address(this).balance, "Insufficient balance");
         payable(owner).transfer(amount);
-
         emit FundsWithdrawn(owner, amount);
     }
 
-    // View a user's policy details
     function getPolicyDetails(address user) external view returns (
         InsuranceType, uint256, uint256, ClaimStatus, bool, uint256, uint256
     ) {
@@ -141,31 +145,27 @@ contract DecentralizedInsurance {
         );
     }
 
-    // Check if a user has an active policy
     function hasActivePolicy(address user) external view returns (bool) {
         return policies[user].isActive;
     }
 
-    // Get the contract's current balance
     function getContractBalance() external view returns (uint256) {
         return address(this).balance;
     }
 
-    // Transfer contract ownership
     function updateOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid address");
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
-    // Allow donations to the contract fund
     function donate() external payable {
         require(msg.value > 0, "Donation must be more than 0");
+        donations[msg.sender] += msg.value;
         emit DonationReceived(msg.sender, msg.value);
     }
 
-    // Extend policy duration
-    function extendPolicy(uint256 extraDays) external payable {
+    function extendPolicy(uint256 extraDays) external payable notPaused {
         InsurancePolicy storage policy = policies[msg.sender];
         require(policy.isActive, "No active policy");
 
@@ -173,38 +173,82 @@ contract DecentralizedInsurance {
         require(msg.value >= requiredAmount, "Insufficient payment for extension");
 
         policy.expiry += extraDays * 1 days;
-
         emit PolicyExtended(msg.sender, policy.expiry);
     }
 
-    // Check if a user's policy is expired
     function isPolicyExpired(address user) public view returns (bool) {
         InsurancePolicy memory policy = policies[user];
         return policy.isActive && block.timestamp > policy.expiry;
     }
 
-    // Blacklist a user
     function blacklistUser(address user) external onlyOwner {
         blacklisted[user] = true;
         emit UserBlacklisted(user);
     }
 
-    // Remove a user from blacklist
     function removeBlacklist(address user) external onlyOwner {
         blacklisted[user] = false;
         emit UserRemovedFromBlacklist(user);
     }
 
-    // Reset a user's policy (admin only)
     function resetPolicy(address user) external onlyOwner {
         require(policies[user].isActive, "No active policy to reset");
         delete policies[user];
         emit PolicyReset(user);
     }
 
-    // Get total stats
     function getPlatformStats() external view returns (uint256 totalPolicies, uint256 totalClaims, uint256 contractBalance) {
         return (totalPoliciesIssued, totalClaimsFiled, address(this).balance);
     }
+
+    function getRemainingTime(address user) external view returns (uint256) {
+        InsurancePolicy memory policy = policies[user];
+        if (policy.isActive && block.timestamp < policy.expiry) {
+            return policy.expiry - block.timestamp;
+        } else {
+            return 0;
+        }
+    }
+
+    function renewPolicy() external payable notPaused {
+        InsurancePolicy storage policy = policies[msg.sender];
+        require(policy.isActive == false || block.timestamp > policy.expiry, "Policy still active");
+        require(!blacklisted[msg.sender], "User is blacklisted");
+        require(msg.value > 0, "Premium must be greater than 0");
+
+        policy.premium = msg.value;
+        policy.coverage = msg.value * 5;
+        policy.claimStatus = ClaimStatus.None;
+        policy.isActive = true;
+        policy.createdAt = block.timestamp;
+        policy.expiry = block.timestamp + 30 days;
+
+        totalPoliciesIssued++;
+        emit PolicyPurchased(msg.sender, policy.policyType, msg.value, policy.coverage);
+    }
+
+    function getActivePolicyCount() external view returns (uint256 count) {
+        count = 0;
+        for (uint i = 0; i < users.length; i++) {
+            if (policies[users[i]].isActive) {
+                count++;
+            }
+        }
+    }
+
+    function getAllUsers() external view onlyOwner returns (address[] memory) {
+        return users;
+    }
+
+    function pauseContract() external onlyOwner {
+        isPaused = true;
+        emit ContractPaused();
+    }
+
+    function unpauseContract() external onlyOwner {
+        isPaused = false;
+        emit ContractUnpaused();
+    }
 }
+
 
